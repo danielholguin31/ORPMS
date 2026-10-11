@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowRight,
   Archive,
@@ -15,7 +15,7 @@ import {
   SlidersHorizontal,
   Trash2,
 } from 'lucide-react';
-import type { Milestone, Project, Task, TaskStatus } from '../shared/types';
+import type { Milestone, ProjectDetail, ProjectSummary, Task, TaskStatus } from '../shared/types';
 import {
   dateLabel,
   dueGroup,
@@ -28,7 +28,17 @@ import {
   workspaceToday,
 } from '../shared/rules';
 import { useApp } from './context';
-import { Avatar, Confirm, Empty, SafeText, Status, StatusIcon, taskCode } from './components/ui';
+import { useApiCollection, useApiQuery } from './queries';
+import {
+  Avatar,
+  Confirm,
+  Empty,
+  QueryNotice,
+  SafeText,
+  Status,
+  StatusIcon,
+  taskCode,
+} from './components/ui';
 import { CreateTask, MilestoneForm, ProjectForm } from './components/create';
 
 export function TaskRow({ task, showProject = false }: { task: Task; showProject?: boolean }) {
@@ -88,24 +98,19 @@ export function TaskRow({ task, showProject = false }: { task: Task; showProject
 }
 export function MyTasks({ onNewTask }: { onNewTask: () => void }) {
   const { data, session, online } = useApp();
-  const [tab, setTab] = useState('assigned');
+  const [params, setParams] = useSearchParams();
+  const tab = ['assigned', 'collaborating', 'completed'].includes(params.get('view') || '')
+    ? params.get('view')!
+    : 'assigned';
+  const query = useApiCollection<Task>(`/tasks?view=${tab}`);
+  const tasks = query.result || [];
   const today = workspaceToday(data.workspace.timeZone);
-  const tasks = data.tasks.filter(
-    (t) =>
-      !t.deletedAt &&
-      !data.projects.find((p) => p.id === t.projectId)?.archivedAt &&
-      (tab === 'collaborating'
-        ? t.collaboratorIds.includes(session.member.id)
-        : t.assigneeId === session.member.id) &&
-      (tab === 'completed' ? t.status === 'done' : isOpen(t.status)),
-  );
   const groups = tab === 'completed' ? ['Completed'] : ['Overdue', 'Today', 'Upcoming', 'No date'];
   const overdue = tasks.filter((t) => dueGroup(t, today) === 'Overdue').length;
   return (
     <section className="page my-tasks-page">
       <div className="page-heading">
         <div>
-          <div className="eyebrow">YOUR WORK</div>
           <h1>My Tasks</h1>
           <p className="page-subtitle">
             {tab === 'completed'
@@ -129,7 +134,7 @@ export function MyTasks({ onNewTask }: { onNewTask: () => void }) {
               key={id}
               aria-pressed={tab === id}
               className={tab === id ? 'active' : ''}
-              onClick={() => setTab(id)}
+              onClick={() => setParams(id === 'assigned' ? {} : { view: id })}
             >
               {label}
             </button>
@@ -139,6 +144,7 @@ export function MyTasks({ onNewTask }: { onNewTask: () => void }) {
           {dateLabel(today)} · {data.workspace.timeZone.split('/').at(-1)?.replaceAll('_', ' ')}
         </span>
       </div>
+      <QueryNotice query={query} />
       {!!tasks.length && (
         <div className="table-heading my-table-heading">
           <span>Task</span>
@@ -168,40 +174,30 @@ export function MyTasks({ onNewTask }: { onNewTask: () => void }) {
           </div>
         ) : null;
       })}
-      {!tasks.length && (
+      {query.result && !tasks.length && (
         <Empty
           icon={<CircleCheck size={25} />}
-          title={
-            tab === 'completed'
-              ? 'No completed tasks yet'
-              : tab === 'collaborating'
-                ? 'Nothing you’re collaborating on'
-                : 'You’re all caught up'
-          }
-        >
-          Tasks assigned to you will appear here. You can also create a task or explore your
-          projects.
-        </Empty>
+          title={tab === 'completed' ? 'No completed tasks' : 'No tasks'}
+        />
       )}
     </section>
   );
 }
 export function Projects() {
   const { data, online } = useApp();
-  const [filter, setFilter] = useState('active'),
-    [create, setCreate] = useState(false);
-  const projects = data.projects.filter((p) =>
-    filter === 'archived'
-      ? !!p.archivedAt
-      : !p.archivedAt && (filter === 'completed' ? isClosed(p.status) : !isClosed(p.status)),
-  );
+  const [params, setParams] = useSearchParams();
+  const filter = ['active', 'completed', 'archived'].includes(params.get('view') || '')
+    ? params.get('view')!
+    : 'active';
+  const [create, setCreate] = useState(false);
+  const query = useApiCollection<ProjectSummary>(`/projects?view=${filter}`);
+  const projects = query.result || [];
+
   return (
     <section className="page">
       <div className="page-heading">
         <div>
-          <div className="eyebrow">WORKSPACE</div>
           <h1>Projects</h1>
-          <p className="page-subtitle">A shared view of where things stand.</p>
         </div>
         <button className="button primary" disabled={!online} onClick={() => setCreate(true)}>
           <Plus size={15} />
@@ -215,7 +211,7 @@ export function Projects() {
               key={id}
               className={filter === id ? 'active' : ''}
               aria-pressed={filter === id}
-              onClick={() => setFilter(id)}
+              onClick={() => setParams(id === 'active' ? {} : { view: id })}
             >
               {id[0].toUpperCase() + id.slice(1)}
               <span className="tab-count">
@@ -232,6 +228,7 @@ export function Projects() {
           ))}
         </div>
       </div>
+      <QueryNotice query={query} />
       {projects.length ? (
         <div className="project-table">
           <div className="table-heading">
@@ -243,7 +240,7 @@ export function Projects() {
           </div>
           {projects.map((project) => {
             const owner = data.members.find((m) => m.id === project.ownerId);
-            const stats = progress(data.tasks.filter((t) => t.projectId === project.id));
+            const stats = project.progress;
             return (
               <Link to={`/projects/${project.id}`} className="project-row" key={project.id}>
                 <div className="project-name-cell">
@@ -268,22 +265,15 @@ export function Projects() {
                   <div className="progress-track">
                     <i style={{ width: `${stats.percent}%` }} />
                   </div>
-                  <span>{stats.total ? `${stats.percent}%` : 'No active tasks'}</span>
+                  <span>{stats.total ? `${stats.percent}%` : '—'}</span>
                 </div>
               </Link>
             );
           })}
         </div>
-      ) : (
-        <Empty
-          icon={<FolderKanban size={26} />}
-          title={filter === 'active' ? 'Start with a project' : `No ${filter} projects`}
-        >
-          {filter === 'active'
-            ? 'Give the work a name, a clear outcome, and an owner.'
-            : 'Projects will appear here when their status changes.'}
-        </Empty>
-      )}
+      ) : query.result ? (
+        <Empty icon={<FolderKanban size={26} />} title={`No ${filter} projects`} />
+      ) : null}
       {create && <ProjectForm onClose={() => setCreate(false)} />}
     </section>
   );
@@ -291,44 +281,49 @@ export function Projects() {
 
 export function ProjectPage({ projectId }: { projectId: string }) {
   const { data, session, change, online, busy, notify } = useApp();
-  const [view, setView] = useState('list'),
-    [owner, setOwner] = useState('all'),
-    [status, setStatus] = useState('open'),
-    [milestoneFilter, setMilestoneFilter] = useState('all');
+  const [params, setParams] = useSearchParams();
+  const view = params.get('view') === 'board' ? 'board' : 'list';
+  const owner = params.get('owner') || 'all';
+  const status = params.get('status') || 'open';
+  const milestoneFilter = params.get('milestone') || 'all';
+  const setFilter = (key: string, value: string, fallback: string) =>
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      if (value === fallback) next.delete(key);
+      else next.set(key, value);
+      return next;
+    });
+  const projectQuery = useApiQuery<ProjectDetail>(`/projects/${projectId}`);
+  const taskParams = new URLSearchParams({
+    project: projectId,
+    top_level: 'true',
+    archived: 'true',
+    status: status === 'open' ? 'not_canceled' : status,
+  });
+  if (owner !== 'all') taskParams.set('assignee', owner);
+  if (milestoneFilter !== 'all') taskParams.set('milestone', milestoneFilter);
+  const taskQuery = useApiCollection<Task>(`/tasks?${taskParams}`);
+  const tasks = taskQuery.result || [];
   const [create, setCreate] = useState<{ milestoneId?: string | null } | null>(null),
     [editProject, setEditProject] = useState(false);
   const [milestoneDialog, setMilestoneDialog] = useState<Milestone | 'new' | null>(null),
     [deleteMilestone, setDeleteMilestone] = useState<Milestone | null>(null),
     [archive, setArchive] = useState(false);
-  const project = data.projects.find((p) => p.id === projectId);
+  const project = projectQuery.result;
   if (!project)
     return (
       <section className="page">
-        <Empty title="Project unavailable">
-          This project may no longer be available. Return to Projects to find your work.
-        </Empty>
+        <QueryNotice query={projectQuery} />
         <Link className="button" to="/projects">
           Back to projects
         </Link>
       </section>
     );
   const editable = !project.archivedAt && !isClosed(project.status);
-  const readonly = !online || !editable;
-  const allTasks = data.tasks.filter(
-    (t) => t.projectId === project.id && !t.deletedAt && !t.parentId,
-  );
-  const stats = progress(allTasks);
+  const readonly = !online || !editable || taskQuery.loading;
+  const stats = project.progress;
   const ownerMember = data.members.find((m) => m.id === project.ownerId);
-  const milestones = data.milestones
-    .filter((m) => m.projectId === project.id)
-    .sort((a, b) => a.sortOrder - b.sortOrder);
-  const tasks = allTasks.filter(
-    (t) =>
-      (owner === 'all' || (owner === 'unassigned' ? !t.assigneeId : t.assigneeId === owner)) &&
-      (status === 'all' || (status === 'open' ? t.status !== 'canceled' : t.status === status)) &&
-      (milestoneFilter === 'all' ||
-        (milestoneFilter === 'none' ? !t.milestoneId : t.milestoneId === milestoneFilter)),
-  );
+  const milestones = project.milestones;
   const run = async (fn: () => Promise<any>) => {
     try {
       await fn();
@@ -338,11 +333,6 @@ export function ProjectPage({ projectId }: { projectId: string }) {
   };
   return (
     <section className="page project-page">
-      <div className="breadcrumb">
-        <Link to="/projects">Projects</Link>
-        <span>/</span>
-        <span>{project.name}</span>
-      </div>
       <div className="page-heading">
         <div>
           <div className="project-title-line">
@@ -356,11 +346,11 @@ export function ProjectPage({ projectId }: { projectId: string }) {
             </span>
             {project.archivedAt && <span className="pill">Archived</span>}
           </div>
-          <p className="project-brief">
-            <SafeText
-              text={project.description || 'Add a short outcome to give this project a direction.'}
-            />
-          </p>
+          {project.description && (
+            <p className="project-brief">
+              <SafeText text={project.description} />
+            </p>
+          )}
         </div>
         <div className="heading-actions">
           {editable && (
@@ -409,7 +399,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
           Target <strong>{dateLabel(project.targetDate)}</strong>
         </span>
         <span>
-          {stats.total ? `${stats.done} of ${stats.total} done` : 'No active tasks'}
+          {stats.total ? `${stats.done}/${stats.total} done` : 'No tasks'}
           <span className="mini-progress">
             <i style={{ width: `${stats.percent}%` }} />
           </span>
@@ -418,16 +408,14 @@ export function ProjectPage({ projectId }: { projectId: string }) {
       {!editable && (
         <div className="read-only-note">
           <Archive size={15} />
-          {project.archivedAt
-            ? 'This project is archived. Restore it to make changes.'
-            : 'This project is closed. Reopen it to make changes.'}
+          {project.archivedAt ? 'Archived · Read only' : 'Closed · Read only'}
         </div>
       )}
       <div className="milestone-strip">
         <div className="milestone-strip-label">Milestones</div>
         <div className="milestone-items">
           {milestones.map((milestone) => {
-            const p = progress(allTasks.filter((t) => t.milestoneId === milestone.id));
+            const p = milestone.progress;
             return (
               <div
                 className={`milestone-item ${milestoneFilter === milestone.id ? 'selected' : ''}`}
@@ -436,7 +424,11 @@ export function ProjectPage({ projectId }: { projectId: string }) {
                 <button
                   className="milestone-main"
                   onClick={() =>
-                    setMilestoneFilter(milestoneFilter === milestone.id ? 'all' : milestone.id)
+                    setFilter(
+                      'milestone',
+                      milestoneFilter === milestone.id ? 'all' : milestone.id,
+                      'all',
+                    )
                   }
                 >
                   <div>
@@ -448,7 +440,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
                   <small>
                     {dateLabel(milestone.targetDate)}
                     <span>·</span>
-                    {p.total ? `${p.done} / ${p.total} done` : 'No active tasks'}
+                    {p.total ? `${p.done}/${p.total} done` : 'No tasks'}
                   </small>
                   <span className="milestone-progress">
                     <i style={{ width: `${p.percent}%` }} />
@@ -481,14 +473,14 @@ export function ProjectPage({ projectId }: { projectId: string }) {
             <Plus size={16} />
           </button>
         )}
-        {!milestones.length && <span className="muted">No milestones yet</span>}
+        {!milestones.length && <span className="muted">No milestones</span>}
       </div>
       <div className="project-task-toolbar">
         <div className="segmented" aria-label="Project view">
           <button
             className={view === 'list' ? 'active' : ''}
             aria-pressed={view === 'list'}
-            onClick={() => setView('list')}
+            onClick={() => setFilter('view', 'list', 'list')}
           >
             <LayoutList size={14} />
             List
@@ -496,7 +488,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
           <button
             className={`board-toggle ${view === 'board' ? 'active' : ''}`}
             aria-pressed={view === 'board'}
-            onClick={() => setView('board')}
+            onClick={() => setFilter('view', 'board', 'list')}
           >
             <Columns3 size={14} />
             Board
@@ -507,7 +499,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
           <select
             aria-label="Filter by owner"
             value={owner}
-            onChange={(e) => setOwner(e.target.value)}
+            onChange={(e) => setFilter('owner', e.target.value, 'all')}
           >
             <option value="all">Owner</option>
             <option value="unassigned">Unassigned</option>
@@ -520,7 +512,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
           <select
             aria-label="Filter by status"
             value={status}
-            onChange={(e) => setStatus(e.target.value)}
+            onChange={(e) => setFilter('status', e.target.value, 'open')}
           >
             <option value="open">Status</option>
             <option value="all">All statuses</option>
@@ -533,7 +525,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
           <select
             aria-label="Filter by milestone"
             value={milestoneFilter}
-            onChange={(e) => setMilestoneFilter(e.target.value)}
+            onChange={(e) => setFilter('milestone', e.target.value, 'all')}
           >
             <option value="all">Milestone</option>
             <option value="none">No milestone</option>
@@ -547,9 +539,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
             <button
               className="text-button"
               onClick={() => {
-                setOwner('all');
-                setStatus('open');
-                setMilestoneFilter('all');
+                setParams(view === 'board' ? { view: 'board' } : {});
               }}
             >
               Clear
@@ -558,6 +548,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
         </div>
         <span className="toolbar-note">{tasks.length} tasks</span>
       </div>
+      <QueryNotice query={taskQuery} />
       <div className={view === 'board' ? 'desktop-list-hidden' : ''}>
         <div className="table-heading project-task-heading">
           <span>Task</span>
@@ -645,15 +636,11 @@ export function ProjectPage({ projectId }: { projectId: string }) {
           ))}
         </div>
       )}
-      {!tasks.length && (
+      {taskQuery.result && !tasks.length && (
         <Empty
           icon={<LayoutList size={23} />}
-          title={allTasks.length ? 'No tasks match these filters' : 'A clear place to start'}
-        >
-          {allTasks.length
-            ? 'Adjust the filters to find the work you’re looking for.'
-            : 'Add the first task, then break it into subtasks when it needs more detail.'}
-        </Empty>
+          title={stats.total ? 'No matching tasks' : 'No tasks'}
+        />
       )}
       {create && (
         <CreateTask
@@ -684,7 +671,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
             )
           }
         >
-          Tasks in “{deleteMilestone.name}” will remain in the project without a milestone.
+          Tasks in “{deleteMilestone.name}” will become ungrouped.
         </Confirm>
       )}
       {archive && (
@@ -699,8 +686,8 @@ export function ProjectPage({ projectId }: { projectId: string }) {
           }
         >
           {project.archivedAt
-            ? 'The project will return to its previous status.'
-            : 'The project stays readable. Its tasks will be hidden from active views until it is restored.'}
+            ? 'Return this project to its previous status.'
+            : 'Hide this project and its tasks from active views. You can restore it later.'}
         </Confirm>
       )}
     </section>

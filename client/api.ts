@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { ApiErrorBody, ApiResult, PublicConfig } from '../shared/types';
+import type { ApiErrorBody, ApiPage, ApiResult, PublicConfig } from '../shared/types';
 
 export class ApiFault extends Error {
   constructor(
@@ -43,7 +43,7 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
   } catch {
     throw new ApiFault(0, {
       code: 'NETWORK',
-      message: 'Connection lost. Your draft is preserved. Reconnect and try again.',
+      message: 'Connection lost. Try again.',
     });
   }
   const body = await response.json().catch(() => null);
@@ -52,12 +52,25 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
       response.status,
       body?.error || {
         code: 'UNAVAILABLE',
-        message: 'The server is unavailable. Your draft is preserved.',
+        message: 'Server unavailable. Try again.',
       },
     );
   return body as T;
 }
-export const get = <T>(path: string) => request<ApiResult<T>>(path).then((r) => r.data);
+export const get = <T>(path: string, options?: RequestInit) =>
+  request<ApiResult<T>>(path, options).then((r) => r.data);
+export async function getAll<T>(path: string, options?: RequestInit): Promise<T[]> {
+  const rows: T[] = [];
+  const query = new URL(path, window.location.origin);
+  query.searchParams.set('limit', '100');
+  do {
+    const page = await request<ApiPage<T>>(`${query.pathname}${query.search}`, options);
+    rows.push(...page.data);
+    if (!page.next_cursor) return rows;
+    query.searchParams.set('cursor', page.next_cursor);
+  } while (!options?.signal?.aborted);
+  return rows;
+}
 export async function mutate<T>(path: string, body: unknown, method = 'POST'): Promise<T> {
   const signature = `${method}:${path}:${JSON.stringify(body)}`;
   const key = attempts.get(signature) || crypto.randomUUID();

@@ -2,6 +2,27 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Circle, CircleCheck, CircleDashed, CircleDot, CircleSlash, X } from 'lucide-react';
 import type { Member, TaskStatus } from '../../shared/types';
 import { TASK_LABELS } from '../../shared/rules';
+import type { QueryState } from '../queries';
+
+export function QueryNotice({ query }: { query: QueryState<unknown> }) {
+  if (query.error)
+    return (
+      <div className="query-error" role="alert">
+        <span>{query.error}</span>
+        <button className="text-button" onClick={query.retry}>
+          Retry
+        </button>
+      </div>
+    );
+  if (query.loading && !query.result)
+    return (
+      <div className="query-loading" role="status">
+        <span className="spinner" />
+        Loading…
+      </div>
+    );
+  return null;
+}
 
 export function StatusIcon({ status, size = 15 }: { status: TaskStatus; size?: number }) {
   const Icon =

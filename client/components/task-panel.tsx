@@ -14,7 +14,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import type { Comment, Task } from '../../shared/types';
+import type { Comment, Task, TaskDetail } from '../../shared/types';
 import {
   childProgress,
   effectiveMilestone,
@@ -24,18 +24,23 @@ import {
   TASK_LABELS,
 } from '../../shared/rules';
 import { useApp } from '../context';
-import { ApiFault } from '../api';
-import { Avatar, Confirm, ErrorNote, SafeText, StatusIcon, taskCode } from './ui';
+import { ApiFault, get } from '../api';
+import { useApiQuery } from '../queries';
+import { Avatar, Confirm, ErrorNote, QueryNotice, SafeText, StatusIcon, taskCode } from './ui';
 import { CreateTask } from './create';
 
 type Draft = { title: string; description: string; version: number };
 // Unsent text is kept in memory while navigating; it is never queued for a write.
 const unsentDrafts = new Map<string, Draft>();
+export const clearTaskDrafts = () => unsentDrafts.clear();
 export function TaskPanel({ id, onClose }: { id: string; onClose: () => void }) {
-  const { data, session, change, online, busy, notify } = useApp();
+  const { data, session, change, online, busy: saving, notify } = useApp();
   const navigate = useNavigate();
-  const task = data.tasks.find((t) => t.id === id && !t.deletedAt);
-  const [draft, setDraft] = useState<Draft | null>(unsentDrafts.get(id) || null),
+  const query = useApiQuery<TaskDetail>(`/tasks/${id}`);
+  const busy = saving || query.loading;
+  const task = query.result?.task;
+  const draftKey = `${session.member.id}:${id}`;
+  const [draft, setDraft] = useState<Draft | null>(unsentDrafts.get(draftKey) || null),
     [error, setError] = useState(''),
     [conflict, setConflict] = useState<Task | null>(null);
   const [trash, setTrash] = useState(false),
@@ -45,9 +50,9 @@ export function TaskPanel({ id, onClose }: { id: string; onClose: () => void }) 
     [mentions, setMentions] = useState<string[]>([]),
     [commentError, setCommentError] = useState('');
   useEffect(() => {
-    if (draft) unsentDrafts.set(id, draft);
-    else unsentDrafts.delete(id);
-  }, [draft, id]);
+    if (draft) unsentDrafts.set(draftKey, draft);
+    else unsentDrafts.delete(draftKey);
+  }, [draft, draftKey]);
   if (!task)
     return (
       <aside className="task-panel">
@@ -57,32 +62,25 @@ export function TaskPanel({ id, onClose }: { id: string; onClose: () => void }) 
           </button>
         </div>
         <div className="panel-content">
-          <h2>Task unavailable</h2>
-          <p>This task may be in the trash or unavailable in this workspace.</p>
-          <Link to="/trash">Open trash</Link>
+          <QueryNotice query={query} />
+          {!query.loading && <Link to="/trash">Open trash</Link>}
         </div>
       </aside>
     );
-  const project = data.projects.find((p) => p.id === task.projectId)!;
-  const parent = data.tasks.find((t) => t.id === task.parentId);
-  const children = data.tasks.filter((t) => t.parentId === task.id && !t.deletedAt);
+  const {
+    project,
+    parent,
+    children,
+    milestones,
+    blockerCandidates: candidates,
+    comments: taskComments,
+    activities,
+  } = query.result!;
   const childStats = childProgress(children);
   const readonly = !online || !!project.archivedAt || isClosed(project.status);
-  const milestone = data.milestones.find((m) => m.id === effectiveMilestone(task, data.tasks));
-  const candidates = data.tasks.filter(
-    (t) =>
-      t.projectId === task.projectId &&
-      t.id !== task.id &&
-      t.parentId !== task.id &&
-      t.id !== task.parentId &&
-      !t.deletedAt,
+  const milestone = milestones.find(
+    (m) => m.id === (parent ? parent.milestoneId : task.milestoneId),
   );
-  const taskComments = data.comments
-    .filter((c) => c.taskId === task.id)
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  const activities = data.activities
-    .filter((a) => a.entityId === task.id)
-    .sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
   const stamp = (date: string) =>
     new Intl.DateTimeFormat('en', {
       timeZone: data.workspace.timeZone,
@@ -119,7 +117,7 @@ export function TaskPanel({ id, onClose }: { id: string; onClose: () => void }) 
         'PATCH',
       );
       setDraft(null);
-      unsentDrafts.delete(id);
+      unsentDrafts.delete(draftKey);
       setConflict(null);
     } catch (e) {
       setError((e as Error).message);
@@ -179,11 +177,15 @@ export function TaskPanel({ id, onClose }: { id: string; onClose: () => void }) 
             className="icon-button"
             title="Copy task link"
             aria-label="Copy task link"
-            onClick={() => {
-              navigator.clipboard
-                .writeText(`${location.origin}/tasks/${id}`)
-                .then(() => notify('Task link copied.'))
-                .catch(() => notify('Copy the task URL from your address bar.'));
+            disabled={!online}
+            onClick={async () => {
+              try {
+                const { url } = await get<{ url: string }>(`/tasks/${id}/link`);
+                await navigator.clipboard.writeText(url);
+                notify('Link copied');
+              } catch (error) {
+                notify((error as Error).message);
+              }
             }}
           >
             <Link2 size={15} />
@@ -205,6 +207,7 @@ export function TaskPanel({ id, onClose }: { id: string; onClose: () => void }) 
         </div>
       </div>
       <div className="panel-content">
+        <QueryNotice query={query} />
         {parent && (
           <Link className="parent-task-link" to={`/tasks/${parent.id}`}>
             <ArrowLeft size={13} />
@@ -233,7 +236,7 @@ export function TaskPanel({ id, onClose }: { id: string; onClose: () => void }) 
               maxLength={20000}
               value={draft.description}
               onChange={(e) => setDraft({ ...draft, description: e.target.value })}
-              placeholder="Add context or links…"
+              placeholder="Description"
             />
             <div className="editor-actions">
               <button
@@ -270,7 +273,7 @@ export function TaskPanel({ id, onClose }: { id: string; onClose: () => void }) 
                 <SafeText text={task.description} />
               ) : (
                 <button className="text-button muted" disabled={readonly} onClick={beginEdit}>
-                  Add a description…
+                  Add description
                 </button>
               )}
             </div>
@@ -360,10 +363,10 @@ export function TaskPanel({ id, onClose }: { id: string; onClose: () => void }) 
                     {task.collaboratorIds.map((id) => (
                       <Avatar key={id} member={data.members.find((m) => m.id === id)} small />
                     ))}
-                    <span>{task.collaboratorIds.length} collaborators</span>
+                    <span>{task.collaboratorIds.length}</span>
                   </span>
                 ) : (
-                  'Add collaborators'
+                  'Add'
                 )}
               </summary>
               <div className="collaborator-options">
@@ -404,13 +407,11 @@ export function TaskPanel({ id, onClose }: { id: string; onClose: () => void }) 
                 onChange={(e) => property({ milestoneId: e.target.value || null })}
               >
                 <option value="">No milestone</option>
-                {data.milestones
-                  .filter((m) => m.projectId === task.projectId)
-                  .map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                    </option>
-                  ))}
+                {milestones.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}
+                  </option>
+                ))}
               </select>
             )}
           </label>
@@ -462,7 +463,7 @@ export function TaskPanel({ id, onClose }: { id: string; onClose: () => void }) 
             <div className="section-heading">
               <h2>Subtasks</h2>
               <span>
-                {childStats.done} / {childStats.total} complete
+                {childStats.done}/{childStats.total}
               </span>
               <button
                 className="icon-button"
@@ -485,11 +486,7 @@ export function TaskPanel({ id, onClose }: { id: string; onClose: () => void }) 
                 <Avatar member={data.members.find((m) => m.id === child.assigneeId)} small />
               </button>
             ))}
-            {!children.length && (
-              <p className="quiet-empty">
-                Break this task into smaller steps when it needs more detail.
-              </p>
-            )}
+            {!children.length && <p className="quiet-empty">No subtasks</p>}
           </section>
         )}
         <section className="comments-section">
@@ -515,9 +512,7 @@ export function TaskPanel({ id, onClose }: { id: string; onClose: () => void }) 
                 {taskComments.map((c) => (
                   <CommentRow key={c.id} comment={c} readonly={readonly} stamp={stamp} />
                 ))}
-                {!taskComments.length && (
-                  <p className="quiet-empty">Add context, ask a question, or share an update.</p>
-                )}
+                {!taskComments.length && <p className="quiet-empty">No comments</p>}
               </div>
               <form className="comment-form" onSubmit={postComment}>
                 <label htmlFor="new-comment" className="sr-only">
@@ -530,7 +525,7 @@ export function TaskPanel({ id, onClose }: { id: string; onClose: () => void }) 
                   disabled={!!project.archivedAt || isClosed(project.status)}
                   value={comment}
                   onChange={(e) => setComment(e.target.value)}
-                  placeholder="Write a comment…"
+                  placeholder="Comment"
                 />
                 <div className="comment-compose-actions">
                   <select
@@ -582,7 +577,7 @@ export function TaskPanel({ id, onClose }: { id: string; onClose: () => void }) 
                   </div>
                 </div>
               ))}
-              {!activities.length && <p className="quiet-empty">Task changes will appear here.</p>}
+              {!activities.length && <p className="quiet-empty">No activity</p>}
             </div>
           )}
         </section>
@@ -601,8 +596,8 @@ export function TaskPanel({ id, onClose }: { id: string; onClose: () => void }) 
             onClose();
           }}
         >
-          “{task.title}”{children.length ? ' and its subtasks' : ''} will move to recoverable trash.
-          Incoming blocker links will be cleared.
+          Move “{task.title}”{children.length ? ' and its subtasks' : ''} to trash and clear blocker
+          links?
         </Confirm>
       )}
       {subtask && (
@@ -662,7 +657,7 @@ function CommentRow({
           )}
         </div>
         {comment.deletedAt ? (
-          <p className="deleted-comment">This comment was deleted.</p>
+          <p className="deleted-comment">Comment deleted</p>
         ) : editing ? (
           <form
             onSubmit={async (e) => {
@@ -700,7 +695,7 @@ function CommentRow({
                 className="text-button"
                 onClick={() => {
                   setBaseVersion(comment.version);
-                  setError('Current version loaded; your draft is preserved.');
+                  setError('Draft preserved. Save to reapply.');
                 }}
               >
                 Reapply my draft

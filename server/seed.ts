@@ -47,12 +47,12 @@ export function demoSeed(now = new Date()): State {
   ];
   const names = ['Corpus', 'Rounds Pipeline', 'Portal', 'Autonomy', 'Models', 'Field Ops'];
   const descriptions = [
-    'Build a reliable corpus for the next round of model evaluation. Align on the review rubric, prepare the pilot, and turn the findings into a repeatable process.',
-    'Make each review round clear, repeatable, and ready for handoff.',
-    'Give the team a single place to find the context they need.',
-    'Validate the next set of autonomous workflows against clear success criteria.',
-    'Establish a consistent baseline for model quality and evaluation.',
-    'Bring field observations back into the product loop.',
+    'Prepare and evaluate the pilot corpus.',
+    'Standardize review handoffs.',
+    'Publish the project directory.',
+    'Validate autonomous workflows.',
+    'Compare model quality across evaluation rounds.',
+    'Capture field observations.',
   ];
   const projects: Project[] = names.map((name, i) => ({
     ...base(100 + i),
@@ -117,15 +117,14 @@ export function demoSeed(now = new Date()): State {
       status: 'done',
       assigneeId: members[1].id,
       dueDate: offset(-3),
-      description:
-        'Agree on the dimensions we will use to evaluate the pilot. Keep the criteria specific enough that two reviewers reach the same conclusion.',
+      description: 'Define the pilot review criteria.',
     }),
     makeTask(301, 'Prepare the pilot batch', 0, {
       status: 'in_progress',
       dueDate: today,
       collaboratorIds: [members[1].id, members[2].id],
       description:
-        'Prepare a representative batch for the first review round.\n\nInclude the edge cases discussed in the rubric and document the selection criteria. Share the batch with the reviewers before the pilot begins.\n\nReference: https://linear.app/docs/project-milestones',
+        'Select representative samples, check coverage, and share the batch with reviewers.',
     }),
     makeTask(302, 'Confirm reviewer availability', 0, { assigneeId: null, dueDate: offset(1) }),
     makeTask(303, 'Review the pilot results', 0, {
@@ -197,7 +196,7 @@ export function demoSeed(now = new Date()): State {
         ...base(400),
         taskId: demoId(301),
         authorId: members[1].id,
-        body: 'The rubric is ready. I added a few examples to make the edge cases easier to review.',
+        body: 'Rubric ready. Examples added for edge cases.',
         mentionIds: [],
         editedAt: null,
         deletedAt: null,

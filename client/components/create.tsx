@@ -1,8 +1,9 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { Project, Milestone } from '../../shared/types';
+import type { Member, Project, ProjectSummary, Milestone } from '../../shared/types';
 import { useApp } from '../context';
-import { Dialog, ErrorNote } from './ui';
+import { useApiCollection } from '../queries';
+import { Dialog, ErrorNote, QueryNotice } from './ui';
 
 export function CreateTask({
   onClose,
@@ -17,9 +18,13 @@ export function CreateTask({
 }) {
   const { data, change, online, busy } = useApp();
   const navigate = useNavigate();
-  const projects = data.projects.filter(
+  const initialProjects = data.projects.filter(
     (p) => !p.archivedAt && ['active', 'planned'].includes(p.status),
   );
+  const projectQuery = useApiCollection<ProjectSummary>('/projects?view=active');
+  const memberQuery = useApiCollection<Member>('/members?active=true');
+  const projects = projectQuery.result || initialProjects;
+  const members = memberQuery.result || [];
   const [project, setProject] = useState(
     projects.some((p) => p.id === projectId) ? projectId! : projects[0]?.id || '',
   );
@@ -30,6 +35,9 @@ export function CreateTask({
     [start, setStart] = useState(''),
     [milestone, setMilestone] = useState(milestoneId || '');
   const [error, setError] = useState('');
+  const milestoneQuery = useApiCollection<Milestone>(
+    project ? `/milestones?project=${project}` : null,
+  );
   const parent = data.tasks.find((t) => t.id === parentId);
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -55,6 +63,9 @@ export function CreateTask({
     <Dialog title={parentId ? 'New subtask' : 'New task'} onClose={onClose}>
       <form onSubmit={submit}>
         <div className="dialog-body form-stack">
+          <QueryNotice query={projectQuery} />
+          {memberQuery.error && <QueryNotice query={memberQuery} />}
+          {milestoneQuery.error && <QueryNotice query={milestoneQuery} />}
           {parent && (
             <p className="parent-context">
               Subtask of <strong>{parent.title}</strong>
@@ -68,7 +79,6 @@ export function CreateTask({
               maxLength={160}
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="What needs to happen?"
             />
           </label>
           <label>
@@ -78,7 +88,6 @@ export function CreateTask({
               maxLength={20000}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="Add context or a link…"
             />
           </label>
           <div className="form-columns">
@@ -104,13 +113,11 @@ export function CreateTask({
               Assignee
               <select value={assignee} onChange={(e) => setAssignee(e.target.value)}>
                 <option value="">Unassigned</option>
-                {data.members
-                  .filter((m) => m.active)
-                  .map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.displayName}
-                    </option>
-                  ))}
+                {members.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.displayName}
+                  </option>
+                ))}
               </select>
             </label>
           </div>
@@ -134,13 +141,11 @@ export function CreateTask({
               Milestone
               <select value={milestone} onChange={(e) => setMilestone(e.target.value)}>
                 <option value="">No milestone</option>
-                {data.milestones
-                  .filter((m) => m.projectId === project)
-                  .map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                    </option>
-                  ))}
+                {(milestoneQuery.result || []).map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}
+                  </option>
+                ))}
               </select>
             </label>
           )}
@@ -151,7 +156,17 @@ export function CreateTask({
           <button type="button" className="button" onClick={onClose}>
             Cancel
           </button>
-          <button className="button primary" disabled={!online || busy || !project}>
+          <button
+            className="button primary"
+            disabled={
+              !online ||
+              busy ||
+              !project ||
+              !projectQuery.result ||
+              !memberQuery.result ||
+              (!!project && !milestoneQuery.result)
+            }
+          >
             {busy ? 'Creating…' : parentId ? 'Create subtask' : 'Create task'}
           </button>
         </div>
@@ -162,6 +177,7 @@ export function CreateTask({
 export function ProjectForm({ project, onClose }: { project?: Project; onClose: () => void }) {
   const { data, change, online, busy } = useApp();
   const navigate = useNavigate();
+  const memberQuery = useApiCollection<Member>('/members?active=true');
   const [name, setName] = useState(project?.name || ''),
     [description, setDescription] = useState(project?.description || '');
   const [owner, setOwner] = useState(project?.ownerId || ''),
@@ -197,6 +213,7 @@ export function ProjectForm({ project, onClose }: { project?: Project; onClose: 
     <Dialog title={project ? 'Edit project' : 'New project'} onClose={onClose}>
       <form onSubmit={submit}>
         <div className="dialog-body form-stack">
+          <QueryNotice query={memberQuery} />
           <label>
             Name
             <input
@@ -205,7 +222,6 @@ export function ProjectForm({ project, onClose }: { project?: Project; onClose: 
               maxLength={160}
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Project name"
             />
           </label>
           <label>
@@ -215,7 +231,6 @@ export function ProjectForm({ project, onClose }: { project?: Project; onClose: 
               maxLength={20000}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="What will this project achieve?"
             />
           </label>
           <div className="form-columns">
@@ -223,13 +238,11 @@ export function ProjectForm({ project, onClose }: { project?: Project; onClose: 
               Owner
               <select value={owner} onChange={(e) => setOwner(e.target.value)}>
                 <option value="">Unassigned</option>
-                {data.members
-                  .filter((m) => m.active)
-                  .map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.displayName}
-                    </option>
-                  ))}
+                {(memberQuery.result || []).map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.displayName}
+                  </option>
+                ))}
               </select>
             </label>
             <label>
@@ -268,10 +281,10 @@ export function ProjectForm({ project, onClose }: { project?: Project; onClose: 
               className="button"
               onClick={() => {
                 setBaseVersion(current.version);
-                setError('Current version loaded. Your draft is ready to reapply.');
+                setError('Draft ready to reapply.');
               }}
             >
-              Reapply my draft to current version
+              Reapply draft
             </button>
           )}
         </div>
@@ -279,7 +292,7 @@ export function ProjectForm({ project, onClose }: { project?: Project; onClose: 
           <button type="button" className="button" onClick={onClose}>
             Cancel
           </button>
-          <button className="button primary" disabled={!online || busy}>
+          <button className="button primary" disabled={!online || busy || !memberQuery.result}>
             {busy ? 'Saving…' : project ? 'Save project' : 'Create project'}
           </button>
         </div>
@@ -334,7 +347,6 @@ export function MilestoneForm({
               maxLength={160}
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="A clear checkpoint"
             />
           </label>
           <label>
@@ -356,10 +368,10 @@ export function MilestoneForm({
               className="button"
               onClick={() => {
                 setBaseVersion(current.version);
-                setError('Current version loaded. Your draft is ready to reapply.');
+                setError('Draft ready to reapply.');
               }}
             >
-              Reapply my draft to current version
+              Reapply draft
             </button>
           )}
         </div>

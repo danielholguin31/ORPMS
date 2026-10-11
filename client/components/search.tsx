@@ -1,53 +1,46 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FolderKanban, Search } from 'lucide-react';
-import { useApp } from '../context';
-import { Dialog, StatusIcon, taskCode } from './ui';
+import type { SearchResult } from '../../shared/types';
+import { useApiQuery } from '../queries';
+import { Dialog, QueryNotice, StatusIcon } from './ui';
 
 export function SearchDialog({ onClose }: { onClose: () => void }) {
-  const { data } = useApp();
   const navigate = useNavigate();
   const [query, setQuery] = useState(''),
-    [selected, setSelected] = useState(0);
-  const q = query.toLowerCase().trim();
-  const results = [
-    ...data.projects
-      .filter((p) => `${p.name} ${p.id}`.toLowerCase().includes(q))
-      .map((p) => ({
-        id: p.id,
-        title: p.name,
-        context: p.archivedAt ? 'Archived project' : 'Project',
-        path: `/projects/${p.id}`,
-        icon: <FolderKanban size={17} />,
-      })),
-    ...data.tasks
-      .filter(
-        (t) => !t.deletedAt && `${t.title} ${t.id} ${taskCode(t.id)}`.toLowerCase().includes(q),
-      )
-      .map((t) => ({
-        id: t.id,
-        title: t.title,
-        context: data.projects.find((p) => p.id === t.projectId)?.name || '',
-        path: `/tasks/${t.id}`,
-        icon: <StatusIcon status={t.status} />,
-      })),
-  ].slice(0, 15);
+    [requestedQuery, setRequestedQuery] = useState(''),
+    [selected, setSelected] = useState(0),
+    [openWhenReady, setOpenWhenReady] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setRequestedQuery(query), 120);
+    return () => clearTimeout(timer);
+  }, [query]);
+  const read = useApiQuery<SearchResult[]>(`/search?q=${encodeURIComponent(requestedQuery)}`);
+  const results = query === requestedQuery ? read.result || [] : [];
   const choose = (path: string) => {
     navigate(path);
     onClose();
   };
+  useEffect(() => {
+    if (openWhenReady && query === requestedQuery && !read.loading) {
+      setOpenWhenReady(false);
+      const result = read.result?.[selected];
+      if (result) choose(result.path);
+    }
+  }, [openWhenReady, query, requestedQuery, read.result, read.loading, selected]);
   return (
-    <Dialog title="Find anything" onClose={onClose} className="search-dialog">
+    <Dialog title="Search" onClose={onClose} className="search-dialog">
       <div className="search-input">
         <Search size={19} />
         <input
           autoFocus
           aria-label="Search tasks and projects"
-          placeholder="Search tasks and projects…"
+          placeholder="Tasks and projects"
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
             setSelected(0);
+            setOpenWhenReady(false);
           }}
           onKeyDown={(e) => {
             if (e.key === 'ArrowDown') {
@@ -60,14 +53,18 @@ export function SearchDialog({ onClose }: { onClose: () => void }) {
                 (selected + Math.max(1, results.length) - 1) % Math.max(1, results.length),
               );
             }
-            if (e.key === 'Enter' && results[selected]) {
+            if (e.key === 'Enter') {
               e.preventDefault();
-              choose(results[selected].path);
+              if (query !== requestedQuery || read.loading) {
+                setRequestedQuery(query);
+                setOpenWhenReady(true);
+              } else if (results[selected]) choose(results[selected].path);
             }
           }}
         />
       </div>
       <div className="search-results">
+        <QueryNotice query={read} />
         {results.map((result, i) => (
           <button
             key={result.id}
@@ -75,24 +72,18 @@ export function SearchDialog({ onClose }: { onClose: () => void }) {
             onMouseEnter={() => setSelected(i)}
             onClick={() => choose(result.path)}
           >
-            {result.icon}
+            {result.kind === 'project' ? (
+              <FolderKanban size={17} />
+            ) : (
+              <StatusIcon status={result.status!} />
+            )}
             <span>{result.title}</span>
             <small>{result.context}</small>
           </button>
         ))}
-        {!results.length && <p>No tasks or projects match “{query}”.</p>}
-      </div>
-      <div className="search-footer">
-        <span>
-          <kbd>↑</kbd>
-          <kbd>↓</kbd> Navigate
-        </span>
-        <span>
-          <kbd>↵</kbd> Open
-        </span>
-        <span>
-          <kbd>esc</kbd> Close
-        </span>
+        {read.result && !read.loading && query === requestedQuery && !results.length && (
+          <p>No results</p>
+        )}
       </div>
     </Dialog>
   );

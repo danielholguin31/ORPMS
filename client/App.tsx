@@ -23,7 +23,8 @@ import { ApiFault, authProvider, configureAuth, get, mutate, request, setCsrf } 
 import { Avatar, Dialog, Empty, ErrorNote } from './components/ui';
 import { CreateTask } from './components/create';
 import { SearchDialog } from './components/search';
-import { TaskPanel } from './components/task-panel';
+import { clearTaskDrafts, TaskPanel } from './components/task-panel';
+import { clearQueryCache } from './queries';
 import { MyTasks, ProjectPage, Projects } from './views';
 import { Notifications, Settings, Trash } from './workspace-views';
 
@@ -69,7 +70,7 @@ export default function App() {
           setData(null);
           setSession(null);
           setLoadError(error);
-        } else setRefreshError('Couldn’t refresh. Showing the last saved view.');
+        } else setRefreshError('Couldn’t refresh.');
       }
       throw error;
     }
@@ -105,6 +106,19 @@ export default function App() {
       if (toastTimeout.current) clearTimeout(toastTimeout.current);
     };
   }, [boot]);
+  useEffect(() => {
+    const closeMenus = (event: MouseEvent) => {
+      const target = event.target as Element;
+      for (const menu of document.querySelectorAll(
+        'details.action-menu[open], details.account-menu[open]',
+      )) {
+        if (!menu.contains(target) || target.closest('.menu-items button'))
+          menu.removeAttribute('open');
+      }
+    };
+    document.addEventListener('click', closeMenus);
+    return () => document.removeEventListener('click', closeMenus);
+  }, []);
   useEffect(() => {
     if (config?.mode !== 'supabase') return;
     const subscription = authProvider()?.auth.onAuthStateChange((_event, authSession) => {
@@ -190,9 +204,8 @@ export default function App() {
     return () => window.removeEventListener('keydown', keyboard);
   }, [online, drawer]);
   async function change<T = any>(path: string, body: unknown, method = 'POST'): Promise<T> {
-    if (!online)
-      throw new Error('You’re offline. Reconnect to save changes. Your draft is preserved.');
-    if (inFlight.current) throw new Error('Another change is being saved. Try again shortly.');
+    if (!online) throw new Error('Offline. Reconnect to save.');
+    if (inFlight.current) throw new Error('Saving another change. Try again.');
     inFlight.current = true;
     setBusy(true);
     setSaveState('saving');
@@ -212,13 +225,19 @@ export default function App() {
   }
   async function signOut() {
     try {
-      if (config?.mode === 'supabase') await authProvider()?.auth.signOut();
-      else await request('/session/logout', { method: 'POST' });
-    } finally {
+      await request('/session/logout', { method: 'POST' });
+      if (config?.mode === 'supabase') {
+        const result = await authProvider()!.auth.signOut({ scope: 'local' });
+        if (result.error) throw result.error;
+      }
       setData(null);
       setSession(null);
       setCsrf('');
+      clearQueryCache();
+      clearTaskDrafts();
       setLoadError(new ApiFault(401, { code: 'SIGNED_OUT', message: 'Sign in to continue.' }));
+    } catch (error) {
+      notify((error as Error).message);
     }
   }
   const invitation = location.pathname.match(/^\/invite\/(.+)$/)?.[1];
@@ -316,11 +335,10 @@ export default function App() {
           <Link to="/my-tasks" className="brand">
             <img src="/openrange-logo.png" alt="Openrange mark" />
             <span>Openrange</span>
-            <ChevronDown size={13} />
           </Link>
           <button className="sidebar-search" onClick={() => setSearchOpen(true)}>
             <Search size={15} />
-            <span>Search anything</span>
+            <span>Search</span>
             <kbd>⌘ K</kbd>
           </button>
           <nav className="main-nav">
@@ -375,7 +393,7 @@ export default function App() {
             {session.mode === 'demo' && (
               <span className="demo-label">
                 <span />
-                Demo workspace · sample data
+                Demo
               </span>
             )}
             <details className="account-menu">
@@ -383,12 +401,12 @@ export default function App() {
                 <Avatar member={session.member} />
                 <div>
                   <strong>{session.member.displayName}</strong>
-                  <small>{session.member.role === 'admin' ? 'Workspace admin' : 'Member'}</small>
+                  <small>{session.member.role === 'admin' ? 'Admin' : 'Member'}</small>
                 </div>
                 <ChevronDown size={13} />
               </summary>
               <div className="menu-items">
-                <button onClick={() => navigate('/settings')}>Account & workspace</button>
+                <button onClick={() => navigate('/settings')}>Settings</button>
                 <button onClick={() => void signOut()}>
                   <LogOut size={14} />
                   Sign out
@@ -407,8 +425,6 @@ export default function App() {
               >
                 <Menu size={19} />
               </button>
-              <span className="header-workspace">Workspace</span>
-              <span className="header-divider">/</span>
               <span>{label}</span>
             </div>
             <div className={`save-indicator ${saveState}`} aria-live="polite">
@@ -424,15 +440,13 @@ export default function App() {
                 </>
               ) : saveState === 'failed' ? (
                 'Failed to save'
-              ) : (
-                <span className="header-team">Openrange team</span>
-              )}
+              ) : null}
             </div>
           </header>
           {!online && (
             <div className="connection-banner" role="status">
               <WifiOff size={15} />
-              You’re offline. Reconnect to save changes. Your open drafts are preserved.
+              Offline. Reconnect to save.
             </div>
           )}
           {online && refreshError && (
@@ -459,7 +473,7 @@ export default function App() {
                 <MyTasks onNewTask={() => setNewTask(true)} />
               ) : (
                 <section className="page">
-                  <Empty title="Page unavailable">Return to your tasks to continue.</Empty>
+                  <Empty title="Page unavailable" />
                   <Link to="/my-tasks" className="button">
                     My Tasks
                   </Link>
@@ -468,7 +482,7 @@ export default function App() {
             </div>
             {taskId && (
               <TaskPanel
-                key={taskId}
+                key={`${session.member.id}:${taskId}`}
                 id={taskId}
                 onClose={() => navigate(projectId ? `/projects/${projectId}` : '/my-tasks')}
               />
@@ -541,12 +555,10 @@ function SignIn({
         <span>Openrange</span>
       </Link>
       <div className="auth-content">
-        <div className="eyebrow">SHARED WORKSPACE</div>
-        <h1>A clear place for the work.</h1>
-        <p>Sign in to see your projects, tasks, and team updates.</p>
+        <h1>Sign in</h1>
         {config.mode === 'demo' ? (
           <div className="demo-signin">
-            <p>Development workspace · fictional sample data</p>
+            <p>Demo accounts</p>
             {accounts.map((account) => (
               <button
                 key={account.userId}
@@ -578,18 +590,20 @@ function SignIn({
               e.preventDefault();
               setPending(true);
               setFailure('');
-              const result = await authProvider()!.auth.signInWithOtp({
-                email,
-                options: {
-                  shouldCreateUser: false,
-                  emailRedirectTo: `${window.location.origin}${window.location.pathname}`,
-                },
-              });
-              if (result.error)
-                setFailure(
-                  'Couldn’t send a sign-in link. Check your email and ask an admin to confirm your account.',
-                );
-              else setMessage('Check your email for a sign-in link.');
+              try {
+                await request('/session/login', {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    email,
+                    redirectPath: window.location.pathname.startsWith('/invite/')
+                      ? window.location.pathname
+                      : '/my-tasks',
+                  }),
+                });
+                setMessage('Check your email for a sign-in link.');
+              } catch (error) {
+                setFailure((error as Error).message);
+              }
               setPending(false);
             }}
           >
@@ -615,7 +629,6 @@ function SignIn({
             {message}
           </p>
         )}
-        <small>Access is by invitation.</small>
       </div>
     </div>
   );
@@ -629,20 +642,34 @@ function InviteLanding({
   token: string;
   onAccepted: () => Promise<void>;
 }) {
-  const [signedIn, setSignedIn] = useState(config.mode === 'demo'),
+  const [signedIn, setSignedIn] = useState(false),
     [error, setError] = useState(''),
     [pending, setPending] = useState(false);
   useEffect(() => {
-    if (config.mode === 'supabase')
-      void authProvider()!
-        .auth.getSession()
-        .then((r) => setSignedIn(!!r.data.session));
+    if (config.mode === 'demo') {
+      void get<Session>('/me')
+        .then((session) => {
+          setCsrf(session.csrfToken);
+          setSignedIn(true);
+        })
+        .catch(() => setSignedIn(false));
+      return;
+    }
+    const auth = authProvider()!.auth;
+    void auth.getSession().then((r) => setSignedIn(!!r.data.session));
+    const subscription = auth.onAuthStateChange((_event, session) => setSignedIn(!!session)).data
+      .subscription;
+    return () => subscription.unsubscribe();
   }, [config.mode]);
   if (!signedIn)
     return (
       <SignIn
         config={config}
         onSignedIn={async () => {
+          if (config.mode === 'demo') {
+            const session = await get<Session>('/me');
+            setCsrf(session.csrfToken);
+          }
           setSignedIn(true);
         }}
       />
@@ -654,9 +681,8 @@ function InviteLanding({
         <span>Openrange</span>
       </div>
       <div className="auth-content">
-        <div className="eyebrow">TEAM INVITATION</div>
-        <h1>Join the workspace.</h1>
-        <p>Accept using the verified email address your invitation was sent to.</p>
+        <h1>Join Openrange</h1>
+        <p>Use the invited email address.</p>
         <button
           className="button primary"
           disabled={pending}
@@ -678,8 +704,13 @@ function InviteLanding({
         <button
           className="text-button"
           onClick={async () => {
-            await authProvider()?.auth.signOut();
-            setSignedIn(false);
+            try {
+              await request('/session/logout', { method: 'POST' });
+              await authProvider()?.auth.signOut({ scope: 'local' });
+              setSignedIn(false);
+            } catch (error) {
+              setError((error as Error).message);
+            }
           }}
         >
           Use a different account

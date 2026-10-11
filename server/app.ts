@@ -5,7 +5,19 @@ import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypt
 import { resolve } from 'node:path';
 import { createClient } from '@supabase/supabase-js';
 import type { Actor, Session, State } from '../shared/types';
-import { dueGroup, effectiveMilestone, progress, workspaceToday } from '../shared/rules';
+import { z } from 'zod';
+import {
+  listInvites,
+  listMembers,
+  listMilestones,
+  listNotifications,
+  listProjects,
+  listTasks,
+  listTrash,
+  projectDetail,
+  searchWorkspace,
+  taskDetail,
+} from './queries';
 import { Domain, inviteToken, requireMember, type Operation } from './domain';
 import { AppError, invariant } from './errors';
 import { publicConfig, type Config } from './config';
@@ -99,12 +111,19 @@ export function createApp(store: Store, config: Config) {
   app.use('/api', (req, _res, next) => {
     const now = Date.now();
     for (const [key, bucket] of buckets) if (bucket.until < now) buckets.delete(key);
-    const sensitive = req.path === '/dev/session' || req.path === '/invites/accept';
-    const key = `${req.ip}:${sensitive ? 'auth' : 'api'}`;
+    const sensitive = ['/dev/session', '/session/login', '/invites/accept'].includes(req.path);
+    // A shared team network generates several reads per view. Keep those reads
+    // separate from write and authentication limits.
+    const kind = sensitive
+      ? 'auth'
+      : ['GET', 'HEAD', 'OPTIONS'].includes(req.method)
+        ? 'read'
+        : 'write';
+    const key = `${req.ip}:${kind}`;
     const bucket = buckets.get(key) || { count: 0, until: now + (sensitive ? 300000 : 60000) };
     bucket.count++;
     buckets.set(key, bucket);
-    if (bucket.count > (sensitive ? 30 : 300))
+    if (bucket.count > (sensitive ? 30 : kind === 'read' ? 1200 : 300))
       return next(new AppError(429, 'RATE_LIMITED', 'Too many requests. Try again shortly.'));
     next();
   });
@@ -167,6 +186,41 @@ export function createApp(store: Store, config: Config) {
       }),
     );
   }
+  app.post(
+    '/api/session/login',
+    handler(async (req, res) => {
+      invariant(supabase, 'Choose a demo account to sign in.', 'DEMO_MODE', 422);
+      const input = z
+        .object({
+          email: z
+            .email()
+            .max(320)
+            .transform((email) => email.toLowerCase()),
+          redirectPath: z
+            .string()
+            .max(300)
+            .regex(/^\/(?:my-tasks|invite\/[0-9a-f-]{36}\.[a-zA-Z0-9_-]{43})$/)
+            .default('/my-tasks'),
+        })
+        .strict()
+        .safeParse(req.body);
+      invariant(input.success, 'Enter a valid email address.', 'INVALID_LOGIN', 422);
+      const { error } = await supabase.auth.signInWithOtp({
+        email: input.data.email,
+        options: {
+          shouldCreateUser: false,
+          emailRedirectTo: `${config.origin}${input.data.redirectPath}`,
+        },
+      });
+      if (error)
+        throw new AppError(
+          error.status === 429 ? 429 : 503,
+          'LOGIN_UNAVAILABLE',
+          'Couldn’t send the sign-in link. Try again.',
+        );
+      res.json({ data: { sent: true } });
+    }),
+  );
   app.use('/api', (req, res, next) => {
     void (async () => {
       let actor: Actor | undefined;
@@ -193,11 +247,7 @@ export function createApp(store: Store, config: Config) {
         if (token) {
           const { data, error } = await supabase!.auth.getUser(token);
           if (error && (!error.status || error.status >= 500))
-            throw new AppError(
-              503,
-              'AUTH_UNAVAILABLE',
-              'Sign-in verification is temporarily unavailable. Your draft is preserved. Try again.',
-            );
+            throw new AppError(503, 'AUTH_UNAVAILABLE', 'Sign-in unavailable. Try again.');
           if (error?.status === 429)
             throw new AppError(
               429,
@@ -255,6 +305,12 @@ export function createApp(store: Store, config: Config) {
   app.post(
     '/api/session/logout',
     handler(async (req, res) => {
+      if (supabase) {
+        const bearer = req.headers.authorization!.match(/^Bearer (.+)$/)![1];
+        const { error } = await supabase.auth.admin.signOut(bearer, 'local');
+        if (error && error.status !== 401 && error.status !== 403)
+          throw new AppError(503, 'LOGOUT_UNAVAILABLE', 'Couldn’t sign out. Try again.');
+      }
       const token = req.headers.cookie
         ?.split(';')
         .map((c) => c.trim())
@@ -270,91 +326,63 @@ export function createApp(store: Store, config: Config) {
     read((state, actor, _req, res) => res.json({ data: snapshot(state, actor) })),
   );
   app.get(
+    '/api/workspace/settings',
+    read((state, _actor, _req, res) => res.json({ data: state.workspace })),
+  );
+  app.get(
     '/api/projects',
-    read((state, _actor, req, res) =>
-      res.json(
-        paginate(
-          state.projects
-            .filter((p) => (req.query.archived === 'true' ? !!p.archivedAt : !p.archivedAt))
-            .map((p) => ({
-              ...p,
-              progress: progress(state.tasks.filter((t) => t.projectId === p.id)),
-            })),
-          req,
-        ),
-      ),
-    ),
+    read((state, _actor, req, res) => res.json(paginate(listProjects(state, req.query), req))),
   );
   app.get(
     '/api/projects/:id',
     read((state, _actor, req, res) => {
-      const project = state.projects.find((p) => p.id === req.params.id);
-      if (!project) throw new AppError(404, 'NOT_FOUND', 'Project unavailable.');
-      res.json({
-        data: {
-          ...project,
-          progress: progress(state.tasks.filter((t) => t.projectId === project.id)),
-        },
-        version: project.version,
-      });
+      const project = projectDetail(state, String(req.params.id));
+      res.json({ data: project, version: project.version });
     }),
   );
   app.get(
     '/api/tasks',
-    read((state, actor, req, res) => {
-      const member = requireMember(state, actor);
-      const today = workspaceToday(state.workspace.timeZone);
-      const tasks = state.tasks.filter((t) => {
-        const project = state.projects.find((p) => p.id === t.projectId)!;
-        if (req.query.trash === 'true' ? !t.deletedAt : !!t.deletedAt) return false;
-        if (req.query.archived !== 'true' && project.archivedAt) return false;
-        if (req.query.project && t.projectId !== req.query.project) return false;
-        if (req.query.assignee === 'me' && t.assigneeId !== member.id) return false;
-        if (req.query.collaborator === 'me' && !t.collaboratorIds.includes(member.id)) return false;
-        if (req.query.status && t.status !== req.query.status) return false;
-        if (req.query.milestone && effectiveMilestone(t, state.tasks) !== req.query.milestone)
-          return false;
-        if (
-          req.query.due_group &&
-          dueGroup(t, today).toLowerCase().replace(' ', '_') !== req.query.due_group
-        )
-          return false;
-        if (
-          req.query.q &&
-          !`${t.title} ${t.id}`.toLowerCase().includes(String(req.query.q).toLowerCase())
-        )
-          return false;
-        return true;
-      });
-      res.json(paginate(tasks, req));
-    }),
+    read((state, actor, req, res) => res.json(paginate(listTasks(state, actor, req.query), req))),
   );
   app.get(
     '/api/tasks/:id',
     read((state, _actor, req, res) => {
-      const task = state.tasks.find((t) => t.id === req.params.id && !t.deletedAt);
-      if (!task) throw new AppError(404, 'NOT_FOUND', 'Task unavailable.');
-      res.json({
-        data: {
-          task,
-          children: state.tasks.filter((t) => t.parentId === task.id && !t.deletedAt),
-          comments: state.comments.filter((c) => c.taskId === task.id),
-          activities: state.activities.filter((a) => a.entityId === task.id),
-        },
-        version: task.version,
-      });
+      const detail = taskDetail(state, String(req.params.id));
+      res.json({ data: detail, version: detail.task.version });
     }),
+  );
+  app.get(
+    '/api/tasks/:id/link',
+    read((state, _actor, req, res) => {
+      const { task } = taskDetail(state, String(req.params.id));
+      res.json({ data: { url: `${config.origin}/tasks/${task.id}` } });
+    }),
+  );
+  app.get(
+    '/api/members',
+    read((state, _actor, req, res) => res.json(paginate(listMembers(state, req.query), req))),
+  );
+  app.get(
+    '/api/milestones',
+    read((state, _actor, req, res) => res.json(paginate(listMilestones(state, req.query), req))),
   );
   app.get(
     '/api/notifications',
     read((state, actor, req, res) =>
-      res.json(
-        paginate(
-          state.notifications.filter((n) => n.recipientId === requireMember(state, actor).id),
-          req,
-        ),
-      ),
+      res.json(paginate(listNotifications(state, actor, req.query), req)),
     ),
+  );
+  app.get(
+    '/api/trash',
+    read((state, _actor, req, res) => res.json(paginate(listTrash(state, req.query), req))),
+  );
+  app.get(
+    '/api/invites',
+    read((state, actor, req, res) => res.json(paginate(listInvites(state, actor, req.query), req))),
+  );
+  app.get(
+    '/api/search',
+    read((state, _actor, req, res) => res.json({ data: searchWorkspace(state, req.query) })),
   );
   app.get(
     '/api/admin/export',
@@ -477,8 +505,7 @@ export function createApp(store: Store, config: Config) {
     return res.status(503).json({
       error: {
         code: 'UNAVAILABLE',
-        message:
-          'The server could not save or load this change. Your draft is preserved. Try again.',
+        message: 'Server unavailable. Try again.',
       },
     });
   });

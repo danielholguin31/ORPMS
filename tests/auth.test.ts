@@ -5,7 +5,11 @@ import { demoId } from '../server/seed';
 import type { Config } from '../server/config';
 import { MemoryStore } from './helpers';
 
-const provider = vi.hoisted(() => ({ getUser: vi.fn() }));
+const provider = vi.hoisted(() => ({
+  getUser: vi.fn(),
+  signInWithOtp: vi.fn(),
+  admin: { signOut: vi.fn() },
+}));
 vi.mock('@supabase/supabase-js', () => ({ createClient: () => ({ auth: provider }) }));
 const config: Config = {
   mode: 'supabase',
@@ -20,6 +24,8 @@ const config: Config = {
 let app: ReturnType<typeof createApp>, store: MemoryStore;
 beforeEach(() => {
   provider.getUser.mockReset();
+  provider.signInWithOtp.mockReset();
+  provider.admin.signOut.mockReset();
   store = new MemoryStore();
   app = createApp(store, config);
 });
@@ -84,5 +90,54 @@ describe('Supabase authentication boundary (mocked provider; no live project)', 
       .expect(503);
     expect(response.body.error.code).toBe('AUTH_UNAVAILABLE');
     expect(JSON.stringify(response.body)).not.toContain('Private provider');
+  });
+  it('routes sign-in through the API with a fixed origin and signup disabled', async () => {
+    provider.signInWithOtp.mockResolvedValue({ data: {}, error: null });
+    await supertest(app).post('/api/session/login').send({ email: 'SAM@EXAMPLE.TEST' }).expect(200);
+    expect(provider.signInWithOtp).toHaveBeenCalledWith({
+      email: 'sam@example.test',
+      options: { shouldCreateUser: false, emailRedirectTo: `${config.origin}/my-tasks` },
+    });
+    await supertest(app)
+      .post('/api/session/login')
+      .send({ email: 'sam@example.test', redirectPath: 'https://foreign.example' })
+      .expect(422);
+    await supertest(app)
+      .post('/api/session/login')
+      .send({ email: 'sam@example.test', role: 'admin' })
+      .expect(422);
+    expect(provider.signInWithOtp).toHaveBeenCalledTimes(1);
+  });
+  it('does not claim to send a link when the managed provider fails', async () => {
+    provider.signInWithOtp.mockResolvedValue({
+      error: { status: 500, message: 'Private SMTP detail' },
+    });
+    const result = await supertest(app)
+      .post('/api/session/login')
+      .send({ email: 'sam@example.test' })
+      .expect(503);
+    expect(result.body.data).toBeUndefined();
+    expect(JSON.stringify(result.body)).not.toContain('Private SMTP');
+    provider.signInWithOtp.mockResolvedValue({ error: { status: 429 } });
+    await supertest(app).post('/api/session/login').send({ email: 'sam@example.test' }).expect(429);
+  });
+  it('revokes the verified session through the logout route without affecting other sessions', async () => {
+    provider.getUser.mockResolvedValue({
+      data: {
+        user: { id: demoId(21), email: 'sam@example.test', email_confirmed_at: '2026-10-10' },
+      },
+      error: null,
+    });
+    provider.admin.signOut.mockResolvedValue({ error: null });
+    await supertest(app)
+      .post('/api/session/logout')
+      .set('Authorization', 'Bearer current-session-token')
+      .expect(200);
+    expect(provider.admin.signOut).toHaveBeenCalledWith('current-session-token', 'local');
+    provider.admin.signOut.mockResolvedValue({ error: { status: 503 } });
+    await supertest(app)
+      .post('/api/session/logout')
+      .set('Authorization', 'Bearer current-session-token')
+      .expect(503);
   });
 });

@@ -118,7 +118,7 @@ test('offline editing retains text and disables writes until reconnect', async (
   await page.getByLabel('Task title', { exact: true }).fill(draft);
   await context.setOffline(true);
   await expect(
-    page.getByText('You’re offline. Reconnect to save changes. Your open drafts are preserved.', {
+    page.getByText('Offline. Reconnect to save.', {
       exact: true,
     }),
   ).toBeVisible();
@@ -126,6 +126,12 @@ test('offline editing retains text and disables writes until reconnect', async (
     page.locator('.task-panel').getByRole('button', { name: 'Save', exact: true }),
   ).toBeDisabled();
   await expect(page.getByLabel('Task title', { exact: true })).toHaveValue(draft);
+  await page.getByRole('button', { name: 'Close task', exact: true }).click();
+  await page.getByRole('button', { name: /^Prepare the pilot batch/ }).click();
+  await expect(page.getByLabel('Task title', { exact: true })).toHaveValue(draft);
+  await expect(
+    page.locator('.task-panel').getByRole('button', { name: 'Save', exact: true }),
+  ).toBeDisabled();
   await context.setOffline(false);
   await expect(
     page.locator('.task-panel').getByRole('button', { name: 'Save', exact: true }),
@@ -172,9 +178,7 @@ test('keyboard creation from an archived project selects an editable project', a
     data: { expected_version: project.version },
   });
   await page.goto(`/projects/${project.id}`);
-  await expect(
-    page.getByText('This project is archived. Restore it to make changes.', { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByText('Archived · Read only', { exact: true })).toBeVisible();
   await page.keyboard.press('n');
   const dialog = page.getByRole('dialog', { name: 'New task', exact: true });
   await expect(dialog.getByRole('combobox', { name: 'Project', exact: true })).toHaveValue(corpus);

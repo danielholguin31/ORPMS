@@ -144,3 +144,38 @@ export interface ApiResult<T> {
   data: T;
   version?: number;
 }
+export interface ApiPage<T> extends ApiResult<T[]> {
+  next_cursor: string | null;
+}
+export interface Progress {
+  done: number;
+  total: number;
+  percent: number;
+}
+export interface ProjectSummary extends Project {
+  progress: Progress;
+}
+export interface MilestoneSummary extends Milestone {
+  progress: Progress;
+}
+export interface ProjectDetail extends ProjectSummary {
+  milestones: MilestoneSummary[];
+}
+export interface TaskDetail {
+  task: Task;
+  project: Project;
+  parent: Task | null;
+  children: Task[];
+  comments: Comment[];
+  activities: Activity[];
+  milestones: Milestone[];
+  blockerCandidates: Task[];
+}
+export interface SearchResult {
+  id: string;
+  kind: 'task' | 'project';
+  title: string;
+  context: string;
+  path: string;
+  status?: TaskStatus;
+}
