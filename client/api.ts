@@ -10,13 +10,17 @@ export class ApiFault extends Error {
   }
 }
 let provider: SupabaseClient | null = null;
+let providerConfig = '';
 let csrf = '';
 const attempts = new Map<string, string>();
 export async function configureAuth(config: PublicConfig) {
   // SEBASTIAN-02: Configure redirect allowlists/SMTP and provision managed users.
   if (config.mode === 'supabase') {
+    const identity = `${config.supabaseUrl}:${config.supabasePublishableKey}`;
+    if (provider && providerConfig === identity) return provider;
     const { createClient } = await import('@supabase/supabase-js');
     provider = createClient(config.supabaseUrl!, config.supabasePublishableKey!);
+    providerConfig = identity;
   }
   return provider;
 }

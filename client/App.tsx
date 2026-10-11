@@ -53,10 +53,28 @@ export default function App() {
     if (toastTimeout.current) clearTimeout(toastTimeout.current);
     toastTimeout.current = setTimeout(() => setToast(''), 6000);
   }, []);
+  const clearSession = useCallback((error?: ApiFault) => {
+    ++sequence.current;
+    setData(null);
+    setSession(null);
+    setCsrf('');
+    clearQueryCache();
+    clearTaskDrafts();
+    setNewTask(false);
+    setSearchOpen(false);
+    setShortcuts(false);
+    setDrawer(false);
+    setSaveState('');
+    setRefreshError('');
+    setLoadError(
+      error || new ApiFault(401, { code: 'SIGNED_OUT', message: 'Sign in to continue.' }),
+    );
+  }, []);
   const refresh = useCallback(async () => {
     const current = ++sequence.current;
     try {
       const nextSession = await get<Session>('/me');
+      if (sequence.current !== current) return;
       setCsrf(nextSession.csrfToken);
       const next = await get<Snapshot>('/workspace');
       if (sequence.current !== current) return;
@@ -67,14 +85,12 @@ export default function App() {
     } catch (error) {
       if (sequence.current === current) {
         if (error instanceof ApiFault && [401, 403].includes(error.status)) {
-          setData(null);
-          setSession(null);
-          setLoadError(error);
+          clearSession(error);
         } else setRefreshError('Couldn’t refresh.');
       }
       throw error;
     }
-  }, []);
+  }, [clearSession]);
   const switchAccount = useCallback(
     async (userId: string) => {
       await request('/dev/session', { method: 'POST', body: JSON.stringify({ userId }) });
@@ -121,11 +137,12 @@ export default function App() {
   }, []);
   useEffect(() => {
     if (config?.mode !== 'supabase') return;
-    const subscription = authProvider()?.auth.onAuthStateChange((_event, authSession) => {
-      if (authSession) setTimeout(() => void refresh().catch(() => {}), 0);
+    const subscription = authProvider()?.auth.onAuthStateChange((event, authSession) => {
+      if (event === 'SIGNED_OUT') clearSession();
+      else if (authSession) setTimeout(() => void refresh().catch(() => {}), 0);
     }).data.subscription;
     return () => subscription?.unsubscribe();
-  }, [config, refresh]);
+  }, [config, refresh, clearSession]);
   useEffect(() => {
     const reconnect = () => {
       setOnline(true);
@@ -230,12 +247,7 @@ export default function App() {
         const result = await authProvider()!.auth.signOut({ scope: 'local' });
         if (result.error) throw result.error;
       }
-      setData(null);
-      setSession(null);
-      setCsrf('');
-      clearQueryCache();
-      clearTaskDrafts();
-      setLoadError(new ApiFault(401, { code: 'SIGNED_OUT', message: 'Sign in to continue.' }));
+      clearSession();
     } catch (error) {
       notify((error as Error).message);
     }

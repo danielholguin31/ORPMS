@@ -51,6 +51,8 @@ Generate the signing secret using your secret manager. Keep it stable; changing 
 
 The frontend obtains only the public Supabase URL/key from `/api/config`. It stores an ordinary Supabase auth session and sends a bearer token to the API. The API verifies it with Supabase `getUser()` on every request, requires a verified email, and checks active membership from the current database state. It ignores browser-supplied roles and identity fields. Production uses bearer authentication, so mutations do not rely on cross-site cookies. Development uses HttpOnly/SameSite cookies plus CSRF headers and is disabled under `NODE_ENV=production`.
 
+Sign-out, including a Supabase sign-out event from another tab, clears the displayed workspace, cached reads, and unsent task drafts. An earlier refresh cannot restore the previous session after it has been cleared.
+
 Configure the Site URL and redirect allowlist for the actual app domain. Permit `/invite/*` redirects for invitation acceptance. Configure production SMTP and Supabase auth rate limits. The sign-in form calls `/api/session/login`; the backend calls `signInWithOtp` with `shouldCreateUser: false`: **users must be provisioned in managed Auth first**. An auth account by itself gives no workspace access.
 
 ## 3. Invitation delivery placeholder
@@ -74,7 +76,7 @@ The Node server serves `dist/client` and `/api` from the same HTTPS origin in pr
 
 The API’s default in-memory rate limiter is useful for development and a single process. **Replace it with a shared, provider-backed limit before scaling to multiple instances**, and configure only the actual trusted proxy hop count. Review proxy access logs so invite tokens and Authorization headers are not recorded. Application error logs contain a request ID, not request bodies or provider secrets.
 
-Visible views refresh every five seconds and on focus/reconnect/writes. There are no websocket dependencies or offline write queues. The `/api/workspace` snapshot is intentionally a complete small-workspace projection; paginated task/project endpoints already exist. If the workspace grows enough that full snapshots become expensive, wire those paginated reads into the frontend before expanding the pilot. The application serializes workspace writes for simplicity and is not designed for extreme write throughput.
+Visible views refresh every five seconds and on focus/reconnect/writes. There are no websocket dependencies or offline write queues. The visible views already use paginated resource routes. The `/api/workspace` context snapshot remains a complete small-workspace projection for shared names, relationships, and read invalidation. If that snapshot becomes expensive, replace it with targeted context reads before expanding the pilot. The application serializes workspace writes for simplicity and is not designed for extreme write throughput.
 
 ## 5. Integration acceptance before real work
 
@@ -87,4 +89,4 @@ Visible views refresh every five seconds and on focus/reconnect/writes. There ar
 - Complete the backup restoration drill in `OPERATIONS.md`, verify counts/representative records, and record the recovery result.
 - Name the maintainer and product reviewer. Obtain pilot acceptance before introducing real team work or expanding access.
 
-Automated tests validate the domain and HTTP service, both migrations and runtime grants on embedded Postgres, and browser workflows in development mode. **A live Supabase integration or provider backup restoration has not been verified.**
+Automated tests validate the domain and HTTP service, both migrations and runtime grants on embedded Postgres, and browser workflows in development mode. The browser session test also exercises the installed Supabase client with a local auth fixture; it does not contact managed Auth. **A live Supabase integration or provider backup restoration has not been verified.**

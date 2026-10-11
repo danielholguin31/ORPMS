@@ -201,6 +201,31 @@ describe('normalized Postgres schema and adapter', () => {
       state = await sqlStore.read();
       expect(state.tasks.find((t) => t.id === demoId(301))!.deletedAt).toBeNull();
       expect(state.tasks.find((t) => t.id === demoId(303))!.blockedById).toBeNull();
+      await expect(
+        service.mutate(
+          admin,
+          'project.patch',
+          demoId(100),
+          {
+            expected_version: state.projects.find((p) => p.id === demoId(100))!.version,
+            ownerId: demoId(20),
+          },
+          randomUUID(),
+        ),
+      ).rejects.toMatchObject({ code: 'INACTIVE_MEMBER' });
+      await service.mutate(
+        admin,
+        'task.patch',
+        demoId(300),
+        {
+          expected_version: state.tasks.find((t) => t.id === demoId(300))!.version,
+          status: 'todo',
+          assigneeId: demoId(30),
+        },
+        randomUUID(),
+      );
+      state = await sqlStore.read();
+      expect(state.tasks.find((t) => t.id === demoId(300))!.assigneeId).toBe(demoId(30));
     } finally {
       await db.exec('reset role');
     }

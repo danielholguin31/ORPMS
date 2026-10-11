@@ -501,6 +501,7 @@ class Mutation {
             'PROJECT_CLOSED',
           );
         const next = { ...project, ...patch };
+        if ('ownerId' in patch) eligibleMember(this.s, patch.ownerId);
         if (isClosed(next.status))
           invariant(
             !this.s.tasks.some(
@@ -581,6 +582,7 @@ class Mutation {
         if (
           patch.status &&
           isOpen(patch.status) &&
+          !('assigneeId' in patch) &&
           task.assigneeId &&
           !this.s.members.some((m) => m.id === task.assigneeId && m.active)
         )

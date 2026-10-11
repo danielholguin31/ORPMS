@@ -228,6 +228,50 @@ describe('membership and invitation safety', () => {
       call('task.create', null, { projectId: demoId(101), title: 'Denied' }, member),
     ).rejects.toMatchObject({ code: 'NOT_A_MEMBER' });
   });
+  it('rejects an explicit inactive project owner instead of silently removing the assignment', async () => {
+    await call('member.patch', demoId(20), { expected_version: 1, active: false });
+    const project = store.state.projects.find((p) => p.id === demoId(100))!;
+    await expect(
+      call('project.patch', project.id, {
+        expected_version: project.version,
+        ownerId: demoId(20),
+      }),
+    ).rejects.toMatchObject({ code: 'INACTIVE_MEMBER' });
+    expect(store.state.projects.find((p) => p.id === project.id)?.ownerId).toBe(demoId(10));
+  });
+  it('clears inactive historical attribution on reopening while respecting an explicit active assignee', async () => {
+    await call('member.patch', demoId(20), { expected_version: 1, active: false });
+    const { data: reopened } = await call('task.patch', demoId(300), {
+      expected_version: task(300).version,
+      status: 'todo',
+      assigneeId: demoId(30),
+    });
+    expect(reopened.assigneeId).toBe(demoId(30));
+
+    const { data: historical } = await call('task.create', null, {
+      projectId: demoId(100),
+      title: 'Historical task',
+      status: 'done',
+      assigneeId: demoId(30),
+    });
+    await call('member.patch', demoId(30), { expected_version: 1, active: false });
+    const { data: unassigned } = await call('task.patch', historical.id, {
+      expected_version: historical.version,
+      status: 'todo',
+    });
+    expect(unassigned.assigneeId).toBeNull();
+  });
+  it('rejects an explicit inactive assignee when reopening historical work', async () => {
+    await call('member.patch', demoId(20), { expected_version: 1, active: false });
+    await expect(
+      call('task.patch', demoId(300), {
+        expected_version: task(300).version,
+        status: 'todo',
+        assigneeId: demoId(20),
+      }),
+    ).rejects.toMatchObject({ code: 'INACTIVE_MEMBER' });
+    expect(task(300).status).toBe('done');
+  });
   it('rechecks authorization before replaying a successful receipt', async () => {
     const key = randomUUID();
     const body = { projectId: demoId(101), title: 'Original' };

@@ -84,4 +84,6 @@ Task statuses: `todo`, `in_progress`, `done`, `canceled`. Project statuses: `pla
 
 HTTP: 401 signed out; 403 inactive/nonmember/role/origin/CSRF denial; 404 unavailable record; 409 version or invariant conflict; 422 invalid fields; 429 rate limited; 503 unavailable/failed persistence. Failed mutations roll back data, versions, activity, notifications, and receipts together. A stale record is returned with `VERSION_CONFLICT`; the client retains its draft and offers reload/reapply.
 
+An explicit owner or assignee must be an active member. Reopening clears an inactive historical assignee only when the request does not explicitly choose an assignee; a valid replacement is retained. Choosing an inactive person returns `INACTIVE_MEMBER` (422) without saving the change.
+
 Activity is append-only. A change emits at most one notification per event/recipient, excludes the actor, and preserves assignment/collaborator distinction. Comments do not increment the task’s version or subscribe their authors automatically.
